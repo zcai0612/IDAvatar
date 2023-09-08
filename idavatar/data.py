@@ -7,7 +7,7 @@ import numpy as np
 import random
 from copy import deepcopy
 import tqdm
-
+from idavatar.datasets_utils.build.prompt_utils import generate_augment_prompt
 
 class IDAvatarDataset(torch.utils.data.Dataset):
     def __init__(
@@ -15,19 +15,17 @@ class IDAvatarDataset(torch.utils.data.Dataset):
         images_dir,
         masks_dir,
         prompts_path,
-        prompts_aug_path,
         tokenizer,
         train_transforms,
         object_transforms,
         object_processor,
         device=None,
         image_token="<|image|>",
-        coarse_person = ['man', 'woman', 'boy', 'girl', 'lady', 'sir', 'male', 'female', 'person', 'student'],
+        coarse_person = ['man', 'woman', 'guy', 'boy', 'girl', 'lady', 'sir', 'male', 'female', 'person', 'student'],
     ):
         self.images_dir = images_dir
         self.masks_dir = masks_dir
         self.prompts_path = prompts_path
-        self.prompts_aug_path = prompts_aug_path
         self.tokenizer = tokenizer
         self.train_transforms = train_transforms
         self.object_transforms = object_transforms
@@ -36,9 +34,13 @@ class IDAvatarDataset(torch.utils.data.Dataset):
         self.device = device
 
         self.image_ids = os.listdir(images_dir)
+        self.coarse_person = coarse_person
 
         tokenizer.add_tokens([image_token], special_tokens=True)
         self.image_token_id = tokenizer.convert_tokens_to_ids(image_token)
+        with open(self.prompts_path, "r") as f:
+            self.prompts_json = json.load(f)
+
 
     def __len__(self):
         return len(self.image_ids)
@@ -78,13 +80,20 @@ class IDAvatarDataset(torch.utils.data.Dataset):
 
 
     @torch.no_grad()
-    def preprocess(self, image, mask, prompt, prompt_aug, image_id):
-        caption = prompt_aug
+    def preprocess(self, image, mask, prompt):
+        caption = generate_augment_prompt(
+                self.coarse_person,
+                prompt,
+                self.special_token            
+            )
         segment = mask
 
         pixel_value, transformed_segmap = self.train_transforms(image, segment)
 
-        person_pixel_value = torch.where(transformed_segmap==1, pixel_value, 0)
+        # 如果segmap已经被处理好了，则不需要这个
+        # person_pixel_value = torch.where(transformed_segmap==1, pixel_value, 0)
+        # 默认mask已经处理好了
+        person_pixel_value = transformed_segmap
 
         input_ids, image_token_mask = self._tokenize_and_mask_noun_phrases_ends(
             caption=caption
@@ -94,39 +103,33 @@ class IDAvatarDataset(torch.utils.data.Dataset):
             "pixel_values": pixel_value,
             "person_pixel_values": person_pixel_value,
             "input_ids": input_ids,
-            "image_token_mask": image_token_mask,
-            "image_ids": torch.tensor(image_id),
         }
 
     def __getitem__(self, idx):
         image_id = self.image_ids[idx]
-        chunk = '1P1M'
 
-        image_path = os.path.join(self.images_dir, chunk, '_', image_id)
-        mask_path = os.path.join(self.masks_dir, chunk, '_', image_id)
+        image_path = os.path.join(self.images_dir, image_id)
+        mask_path = os.path.join(self.masks_dir, image_id)
 
         image = read_image(image_path, mode=ImageReadMode.RGB)
-        mask = read_image(mask_path, mode=ImageReadMode.GRAY_ALPHA)
+        mask = read_image(mask_path, mode=ImageReadMode.RGB)
 
-        img_key = chunk + '_' + str(image_id)
-        # TODO prompt以什么形式保存还不知道
-        with open(self.prompts_path, "r") as f:
-            prompt = json.load(f)[img_key]
+        # TODO prompt以什么形式保存还不知道，io次数过长，是不是要直接存在json里
+        # with open(self.prompts_path, "r") as f:
+        #     prompt = json.load(f)[img_key]
 
-        with open(self.prompts_aug_path, "r") as f:
-            prompt_aug = json.load(f)[img_key]
+        prompt = self.prompts_json[image_id]
 
         if self.device is not None:
             image = image.to(self.device)
             segmap = segmap.to(self.device)
 
-        return self.preprocess(image, mask, prompt, prompt_aug, image_id)
+        return self.preprocess(image, mask, prompt)
 
 
 def collate_fn(examples):
     pixel_values = torch.stack([example["pixel_values"] for example in examples])
     input_ids = torch.cat([example["input_ids"] for example in examples])
-    image_ids = torch.stack([example["image_ids"] for example in examples])
 
     image_token_mask = torch.cat([example["image_token_mask"] for example in examples])
 
@@ -138,7 +141,6 @@ def collate_fn(examples):
         "pixel_values": pixel_values,
         "input_ids": input_ids,
         "image_token_mask": image_token_mask,
-        "image_ids": image_ids,
         "person_pixel_values": person_pixel_values
     }
 

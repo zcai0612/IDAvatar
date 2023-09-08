@@ -95,10 +95,6 @@ class LinearAttention(nn.Module):
         out = rearrange(out, 'b heads c (h w) -> b (heads c) h w', heads=self.heads, h=h, w=w)
         return self.to_out(out)
 
-
-
-
-
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, key_dim, value_dim, heads=8, dim_head=64, dropout=0):
         super().__init__()

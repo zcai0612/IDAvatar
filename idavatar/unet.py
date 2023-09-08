@@ -282,7 +282,7 @@ class UNetModel(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
         self.first_conv_type = "SD"
-        self.first_conv_restorable = True 
+        self.first_conv_restorable = False # We just take the image as the condition, not having position info
 
         in_c = in_channels
         self.input_blocks = nn.ModuleList([TimestepEmbedSequential(conv_nd(dims, in_c, model_channels, 3, padding=1))])
